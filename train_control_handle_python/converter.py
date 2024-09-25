@@ -4,15 +4,20 @@ import json
 import time
 
 SERIAL_BAUD = 9600
+HYSTERESIS = 1  # Adjust this value to control sensitivity of switching
 
-# Function to map ADC value to a discrete output with proper rounding
-def map_to_discrete(value, min_value, max_value, divisions):
-    # Avoid division by zero
+# Function to map ADC value to a discrete output with hysteresis
+def map_to_discrete(value, min_value, max_value, divisions, last_discrete, hysteresis):
     if max_value == min_value:
         return 0
-    # Map the value and round to nearest discrete level
     scale = (divisions - 1) / (max_value - min_value)
-    return round((value - min_value) * scale)
+    mapped_value = (value - min_value) * scale
+    discrete_value = round(mapped_value)
+    
+    # Check if the difference between current and last is greater than hysteresis
+    if abs(discrete_value - last_discrete) >= hysteresis:
+        return discrete_value
+    return last_discrete
 
 # Function to read calibration data from file
 def load_calibration(file_path):
@@ -40,13 +45,12 @@ def read_line_to_values(ser):
     except Exception as e:
         print("bad line was: ", line)
         print(f"Bad line exception: {e}")
-    else:
-        if ',' not in decoded:
-            print("bad line was: ", decoded)
-            return None
-        split = decoded.split(',')
-        return split[:2]
-
+        return None
+    if ',' not in decoded:
+        print("bad line was: ", decoded)
+        return None
+    split = decoded.split(',')
+    return split[:2]
 
 # Function to run calibration mode
 def calibrate(serial_port, file_path):
@@ -87,6 +91,10 @@ def main(port_name, calibration_file, calibrate_mode):
 
     # Load calibration data
     calibration_data = load_calibration(calibration_file)
+
+    # Track last discrete values to apply hysteresis
+    last_discrete_adc1 = 0
+    last_discrete_adc2 = 0
     
     print("Starting data processing...")
 
@@ -96,13 +104,16 @@ def main(port_name, calibration_file, calibrate_mode):
             if values:
                 adc1, adc2 = map(int, values)
                 
-                # Map to discrete outputs based on calibration data and division
-                discrete_adc1 = map_to_discrete(adc1, calibration_data['min_adc1'], calibration_data['max_adc1'], 3)
-                discrete_adc2 = map_to_discrete(adc2, calibration_data['min_adc2'], calibration_data['max_adc2'], 20)
+                # Map to discrete outputs with hysteresis
+                discrete_adc1 = map_to_discrete(adc1, calibration_data['min_adc1'], calibration_data['max_adc1'], 3, last_discrete_adc1, HYSTERESIS)
+                discrete_adc2 = map_to_discrete(adc2, calibration_data['min_adc2'], calibration_data['max_adc2'], 20, last_discrete_adc2, HYSTERESIS)
+                
+                # Update last discrete values
+                last_discrete_adc1 = discrete_adc1
+                last_discrete_adc2 = discrete_adc2
                 
                 print(f"Raw: {adc1}, {adc2} -> Discrete: {discrete_adc1}, {discrete_adc2}")
                 
-
     except KeyboardInterrupt:
         print("\nStopping data processing.")
     except Exception as e:
@@ -112,7 +123,7 @@ def main(port_name, calibration_file, calibrate_mode):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Read serial data and process ADC values.")
-    parser.add_argument('--port-name', required='true', help='address of com port (e.g. COM7, /etc/ttyUSB0)')
+    parser.add_argument('--port-name', required=True, help='address of com port (e.g. COM7, /etc/ttyUSB0)')
     parser.add_argument('--calibrate', action='store_true', help='Run in calibration mode')
     parser.add_argument('--calibration-file', type=str, default='calibration.json', help='File to store/load calibration data')
     args = parser.parse_args()
